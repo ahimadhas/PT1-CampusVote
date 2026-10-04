@@ -95,29 +95,46 @@ async function runTests() {
 
     assert(student1.role === 'student', 'Public registration produces a student role');
 
-    // Create candidate accounts (candidates are real registered users, selected by admin)
+    // Create candidate accounts: Students request candidate status, Admin approves them
     const candidateAlpha = await User.create({
       name: 'Candidate Alpha',
       email: 'alpha@student.university.edu',
       password: 'password123',
-      role: 'candidate',
+      role: 'student',
+      candidateStatus: 'pending',
+      candidateManifesto: 'Platform Alpha for Student Leadership',
     });
 
     const candidateBeta = await User.create({
       name: 'Candidate Beta',
       email: 'beta@student.university.edu',
       password: 'password123',
-      role: 'candidate',
+      role: 'student',
+      candidateStatus: 'pending',
+      candidateManifesto: 'Platform Beta for Student Welfare',
     });
 
-    assert(candidateAlpha.role === 'candidate', 'Candidate accounts can be created with the candidate role');
+    assert(candidateAlpha.role === 'student', 'Candidate accounts are Student role (exactly 2 roles: Student and Admin)');
+    assert(candidateAlpha.candidateStatus === 'pending', 'Student candidate request starts in pending status');
+
+    // Admin approves candidate requests
+    candidateAlpha.candidateStatus = 'approved';
+    candidateAlpha.candidateReviewedAt = new Date();
+    await candidateAlpha.save();
+
+    candidateBeta.candidateStatus = 'approved';
+    candidateBeta.candidateReviewedAt = new Date();
+    await candidateBeta.save();
+
+    assert(candidateAlpha.candidateStatus === 'approved', 'Admin approval makes candidate eligible for elections');
+    assert(candidateBeta.candidateStatus === 'approved', 'Second candidate approved and eligible');
 
     // ------------------------------------------------------------
     // 2. POLL CRUD & VALIDATION
     // ------------------------------------------------------------
     console.log('\n[TEST GROUP 2] Poll Management & Validation');
 
-    // Test creating poll with real registered candidates as options
+    // Test creating poll with real registered approved candidates as options
     const poll1 = await Poll.create({
       title: '2026 Student Council Election',
       description: 'Choose your president for the upcoming academic year.',
@@ -213,6 +230,157 @@ async function runTests() {
     assert(alphaVotes === 2, `Candidate Alpha received exactly 2 aggregated votes (actual: ${alphaVotes})`);
     assert(betaVotes === 1, `Candidate Beta received exactly 1 aggregated vote (actual: ${betaVotes})`);
     assert(alphaVotes + betaVotes === 3, 'Total votes match sum of individual votes');
+
+    // ------------------------------------------------------------
+    // 6. ELECTION FLOW: CANDIDATE REQUEST -> ADMIN APPROVE -> DRAFT -> ACTIVATE -> VOTE
+    // ------------------------------------------------------------
+    console.log('\n[TEST GROUP 6] Full Election Flow & Approval Enforcements');
+
+    // Student 1 submits candidate request
+    student1.candidateStatus = 'pending';
+    student1.candidateManifesto = 'Building a connected university community';
+    student1.candidateRequestedAt = new Date();
+    await student1.save();
+    assert(student1.candidateStatus === 'pending', 'Student successfully submits candidate request');
+
+    // Admin approves Student 1
+    student1.candidateStatus = 'approved';
+    student1.candidateReviewedAt = new Date();
+    await student1.save();
+    assert(student1.candidateStatus === 'approved', 'Admin approves student candidacy request');
+
+    // Verify non-approved student rejection when creating election
+    let unapprovedCandidateError = false;
+    const { createPoll: createPollHandler } = require('../controllers/pollController');
+    const mockReqUnapproved = {
+      user: admin,
+      body: {
+        title: 'Department Rep Election',
+        description: 'Test description',
+        category: 'class_election',
+        options: [
+          { candidateId: student1._id.toString() },
+          { candidateId: student2._id.toString() }, // student2 is NOT approved!
+        ],
+      },
+    };
+    const mockResUnapproved = {
+      statusCode: 200,
+      status(code) {
+        this.statusCode = code;
+        return this;
+      },
+      json(data) {
+        if (this.statusCode === 400 && data.message && data.message.includes('not approved')) {
+          unapprovedCandidateError = true;
+        }
+        return data;
+      },
+    };
+    await createPollHandler(mockReqUnapproved, mockResUnapproved, (err) => {
+      if (err) console.error('createPollHandler next(err):', err);
+    });
+    assert(unapprovedCandidateError === true, 'Election creation strictly rejects unapproved candidates');
+
+    // Admin approves student 2 as well
+    student2.candidateStatus = 'approved';
+    student2.candidateReviewedAt = new Date();
+    await student2.save();
+
+    // Admin creates draft election with approved candidates
+    let createdPollObj = null;
+    const mockReqDraft = {
+      user: admin,
+      body: {
+        title: 'Department Rep Election 2026',
+        description: 'Vote for your representative',
+        category: 'class_election',
+        status: 'draft',
+        options: [
+          { candidateId: student1._id.toString(), description: 'Focus on labs' },
+          { candidateId: student2._id.toString(), description: 'Focus on events' },
+        ],
+      },
+    };
+    const mockResDraft = {
+      statusCode: 200,
+      status(code) {
+        this.statusCode = code;
+        return this;
+      },
+      json(data) {
+        if (data.success && data.poll) {
+          createdPollObj = data.poll;
+        }
+        return data;
+      },
+    };
+    await createPollHandler(mockReqDraft, mockResDraft, () => {});
+    assert(createdPollObj !== null && createdPollObj.status === 'draft', 'Admin creates election with draft status');
+
+    // Admin activates election
+    const { activatePoll: activatePollHandler } = require('../controllers/pollController');
+    let activatedPollObj = null;
+    const mockReqActivate = {
+      params: { id: createdPollObj._id.toString() },
+    };
+    const mockResActivate = {
+      statusCode: 200,
+      status(code) {
+        this.statusCode = code;
+        return this;
+      },
+      json(data) {
+        if (data.success && data.poll) {
+          activatedPollObj = data.poll;
+        }
+        return data;
+      },
+    };
+    await activatePollHandler(mockReqActivate, mockResActivate, () => {});
+    assert(activatedPollObj !== null && activatedPollObj.status === 'active', 'Admin activates election, opening it for student voting');
+
+    // Student 3 votes using existing voting system
+    const { castVote: castVoteHandler } = require('../controllers/voteController');
+    let voteSuccess = false;
+    const mockReqVote = {
+      user: student3,
+      params: { id: createdPollObj._id.toString() },
+      body: { optionId: activatedPollObj.options[0]._id.toString() },
+    };
+    const mockResVote = {
+      statusCode: 200,
+      status(code) {
+        this.statusCode = code;
+        return this;
+      },
+      json(data) {
+        if (data.success) {
+          voteSuccess = true;
+        }
+        return data;
+      },
+    };
+    await castVoteHandler(mockReqVote, mockResVote, () => {});
+    assert(voteSuccess === true, 'Student votes in active election using existing voting system');
+
+    // Duplicate vote rejection
+    let duplicateRejected = false;
+    const mockResVoteDup = {
+      statusCode: 200,
+      status(code) {
+        this.statusCode = code;
+        return this;
+      },
+      json(data) {
+        if (this.statusCode === 400 && data.message.includes('already voted')) {
+          duplicateRejected = true;
+        }
+        return data;
+      },
+    };
+    await castVoteHandler(mockReqVote, mockResVoteDup, () => {});
+    assert(duplicateRejected === true, 'Student cannot vote more than once per election');
 
     console.log('\n============================================================');
     console.log(` ALL TESTS PASSED! (${passCount} passed, ${failCount} failed)`);

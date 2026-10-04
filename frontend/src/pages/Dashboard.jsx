@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
-import { adminService, pollService } from '../services/api';
+import { adminService, pollService, authService } from '../services/api';
 import {
   Vote,
   Users,
@@ -10,6 +10,13 @@ import {
   BarChart3,
   PlusCircle,
   ArrowRight,
+  Award,
+  Clock,
+  CheckCircle2,
+  XCircle,
+  Play,
+  Lock,
+  AlertTriangle,
 } from 'lucide-react';
 import LoadingSpinner from '../components/LoadingSpinner';
 import PollCard from '../components/PollCard';
@@ -21,6 +28,7 @@ const Dashboard = () => {
 
   const [loading, setLoading] = useState(true);
   const [adminStats, setAdminStats] = useState(null);
+  const [pendingRequests, setPendingRequests] = useState([]);
   const [activePolls, setActivePolls] = useState([]);
 
   // Voting Modal State
@@ -28,9 +36,15 @@ const Dashboard = () => {
   const [selectedOptionId, setSelectedOptionId] = useState('');
   const [votingLoading, setVotingLoading] = useState(false);
 
-  // Admin Close / Delete Confirmation Modals
+  // Student Candidate Request Modal
+  const [isCandidateModalOpen, setIsCandidateModalOpen] = useState(false);
+  const [candidateManifesto, setCandidateManifesto] = useState('');
+  const [submittingCandidate, setSubmittingCandidate] = useState(false);
+
+  // Admin Confirmation Modals
   const [pollToClose, setPollToClose] = useState(null);
   const [pollToDelete, setPollToDelete] = useState(null);
+  const [pollToActivate, setPollToActivate] = useState(null);
 
   const fetchDashboardData = async () => {
     setLoading(true);
@@ -39,6 +53,7 @@ const Dashboard = () => {
         const statsRes = await adminService.getStats();
         if (statsRes.data.success) {
           setAdminStats(statsRes.data.stats);
+          setPendingRequests(statsRes.data.pendingRequests || []);
         }
         const pollsRes = await pollService.getAll({ limit: 4 });
         if (pollsRes.data.success) {
@@ -65,7 +80,7 @@ const Dashboard = () => {
   const handleCastVote = async (e) => {
     e.preventDefault();
     if (!selectedOptionId) {
-      error('Please select a candidate or option to cast your vote.');
+      error('Please select a candidate to cast your vote.');
       return;
     }
 
@@ -85,32 +100,83 @@ const Dashboard = () => {
     }
   };
 
-  // Handle admin close/delete actions (mirrors Polls.jsx)
+  // Student Candidate Request Submission
+  const handleCandidateRequest = async (e) => {
+    e.preventDefault();
+    setSubmittingCandidate(true);
+    try {
+      const res = await authService.requestCandidate({ manifesto: candidateManifesto });
+      if (res.data.success) {
+        success('Candidacy request submitted! An administrator will review your application.');
+        setIsCandidateModalOpen(false);
+        setCandidateManifesto('');
+        // Update user state if needed
+        if (user) {
+          user.candidateStatus = 'pending';
+        }
+      }
+    } catch (err) {
+      error(err.response?.data?.message || 'Failed to submit candidacy request.');
+    } finally {
+      setSubmittingCandidate(false);
+    }
+  };
+
+  // Admin Quick Review Candidate Request
+  const handleReviewCandidate = async (userId, status) => {
+    try {
+      const res = await adminService.reviewCandidateRequest(userId, status);
+      if (res.data.success) {
+        success(`Candidate request ${status} successfully.`);
+        fetchDashboardData();
+      }
+    } catch (err) {
+      error(err.response?.data?.message || 'Failed to review candidate request.');
+    }
+  };
+
+  // Admin Activate Poll
+  const handleConfirmActivate = async () => {
+    if (!pollToActivate) return;
+    try {
+      const res = await pollService.activate(pollToActivate._id);
+      if (res.data.success) {
+        success('Election activated and opened for student voting!');
+        setPollToActivate(null);
+        fetchDashboardData();
+      }
+    } catch (err) {
+      error(err.response?.data?.message || 'Failed to activate election.');
+    }
+  };
+
+  // Admin Close Poll
   const handleConfirmClose = async () => {
     if (!pollToClose) return;
     try {
       const res = await pollService.close(pollToClose._id);
       if (res.data.success) {
-        success('Poll closed successfully. Results are now available for viewing.');
+        success('Election closed successfully. Certified results are now viewable.');
         setPollToClose(null);
         fetchDashboardData();
       }
     } catch (err) {
-      error(err.response?.data?.message || 'Failed to close poll.');
+      error(err.response?.data?.message || 'Failed to close election.');
     }
   };
 
+  // Admin Delete Poll
   const handleConfirmDelete = async () => {
     if (!pollToDelete) return;
     try {
       const res = await pollService.delete(pollToDelete._id);
       if (res.data.success) {
-        success('Poll and associated votes removed successfully.');
+        success('Election and associated votes removed successfully.');
         setPollToDelete(null);
         fetchDashboardData();
       }
     } catch (err) {
-      error(err.response?.data?.message || 'Failed to delete poll.');
+      error(err.response?.data?.message || 'Failed to delete election.');
     }
   };
 
@@ -126,7 +192,7 @@ const Dashboard = () => {
           <div>
             <div className="flex items-center gap-2 mb-1">
               <span className="text-xs uppercase font-bold tracking-wider px-2.5 py-0.5 rounded bg-white/10 text-campus-200 border border-white/10">
-                {role?.toUpperCase()} PORTAL
+                {role === 'admin' ? 'ADMINISTRATOR PORTAL' : 'STUDENT VOTING PORTAL'}
               </span>
               <span className="text-xs text-slate-300">
                 {user?.department || 'Academic Division'}
@@ -136,16 +202,21 @@ const Dashboard = () => {
               Welcome, {user?.name}
             </h1>
             <p className="text-sm text-slate-300 mt-1 max-w-2xl leading-relaxed">
-              {isAdmin && 'Oversee campus voting procedures, election results, and platform administration.'}
-              {!isAdmin && 'Cast your ballot in active campus elections and review results once polls close.'}
+              {isAdmin && 'Oversee campus elections, approve student candidates, and manage electoral integrity.'}
+              {!isAdmin && 'Cast your confidential ballot in active campus elections and apply to run as a candidate.'}
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-            {isAdmin && (
+            {isAdmin ? (
               <Link to="/polls" className="btn-primary bg-campus-600 hover:bg-campus-500 text-white text-xs py-2 px-3.5 flex items-center gap-1.5 shadow-sm">
                 <PlusCircle className="w-4 h-4" />
-                Manage Polls
+                Manage Elections
+              </Link>
+            ) : (
+              <Link to="/polls" className="btn-primary bg-campus-600 hover:bg-campus-500 text-white text-xs py-2 px-3.5 flex items-center gap-1.5 shadow-sm">
+                <Vote className="w-4 h-4" />
+                View Active Ballots
               </Link>
             )}
           </div>
@@ -179,30 +250,30 @@ const Dashboard = () => {
             <div className="card p-5 border-l-4 border-l-emerald-600">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Active Ballots</p>
-                  <p className="text-2xl font-bold text-slate-900 mt-1">{adminStats.polls.active}</p>
+                  <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Approved Candidates</p>
+                  <p className="text-2xl font-bold text-slate-900 mt-1">{adminStats.users.candidates}</p>
                 </div>
                 <div className="w-10 h-10 rounded-md bg-emerald-50 text-emerald-700 flex items-center justify-center border border-emerald-200">
-                  <Vote className="w-5 h-5" />
+                  <Award className="w-5 h-5" />
                 </div>
               </div>
-              <div className="mt-3 text-xs text-slate-500">
-                <span>{adminStats.polls.total} total elections created</span>
+              <div className="mt-3 text-xs text-slate-500 flex gap-2">
+                <span className="text-amber-700 font-semibold">{adminStats.users.pendingCandidates} pending requests</span>
               </div>
             </div>
 
             <div className="card p-5 border-l-4 border-l-slate-600">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Closed Polls</p>
-                  <p className="text-2xl font-bold text-slate-900 mt-1">{adminStats.polls.closed}</p>
+                  <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Active Ballots</p>
+                  <p className="text-2xl font-bold text-slate-900 mt-1">{adminStats.polls.active}</p>
                 </div>
                 <div className="w-10 h-10 rounded-md bg-slate-100 text-slate-700 flex items-center justify-center border border-slate-200">
-                  <BarChart3 className="w-5 h-5" />
+                  <Vote className="w-5 h-5" />
                 </div>
               </div>
               <div className="mt-3 text-xs text-slate-500">
-                <span>Results aggregated & published</span>
+                <span>{adminStats.polls.total} total elections · {adminStats.polls.closed} closed</span>
               </div>
             </div>
 
@@ -217,29 +288,80 @@ const Dashboard = () => {
                 </div>
               </div>
               <div className="mt-3 text-xs text-slate-500">
-                <span>Across all elections</span>
+                <span>Certified single-vote tallies</span>
               </div>
             </div>
           </div>
 
-          {/* Admin Management Overview */}
+          {/* Pending Candidate Requests Alert Section */}
+          {pendingRequests.length > 0 && (
+            <div className="card border-amber-300 overflow-hidden">
+              <div className="p-4 bg-amber-50/70 border-b border-amber-200 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-amber-600" />
+                  <h3 className="text-sm font-bold text-amber-900">
+                    Pending Candidate Requests ({pendingRequests.length})
+                  </h3>
+                </div>
+                <Link
+                  to="/admin/users"
+                  className="text-xs font-semibold text-amber-800 hover:text-amber-900 flex items-center gap-1"
+                >
+                  View All in User Management <ArrowRight className="w-3.5 h-3.5" />
+                </Link>
+              </div>
+
+              <div className="divide-y divide-slate-100">
+                {pendingRequests.map((req) => (
+                  <div key={req._id} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-50">
+                    <div>
+                      <p className="text-sm font-bold text-slate-900">{req.name}</p>
+                      <p className="text-xs text-slate-500">{req.email} · {req.department || 'General'}</p>
+                      {req.candidateManifesto && (
+                        <p className="text-xs text-slate-600 italic mt-1 line-clamp-1">
+                          "{req.candidateManifesto}"
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
+                      <button
+                        onClick={() => handleReviewCandidate(req._id, 'approved')}
+                        className="btn-primary bg-emerald-600 hover:bg-emerald-700 text-xs py-1.5 px-3 flex items-center gap-1 shadow-2xs"
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        Approve Candidate
+                      </button>
+                      <button
+                        onClick={() => handleReviewCandidate(req._id, 'rejected')}
+                        className="btn-secondary text-xs py-1.5 px-3 text-rose-600 hover:bg-rose-50 border-rose-200"
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Admin Elections Overview */}
           <div className="card">
             <div className="p-5 border-b border-slate-200 flex items-center justify-between">
               <div>
-                <h2 className="text-base font-bold text-slate-900">Campus Polls & Elections</h2>
-                <p className="text-xs text-slate-500 mt-0.5">Live status and administration of voting records</p>
+                <h2 className="text-base font-bold text-slate-900">Campus Elections</h2>
+                <p className="text-xs text-slate-500 mt-0.5">Live status and administration of student elections</p>
               </div>
               <Link to="/polls" className="text-xs font-semibold text-campus-700 hover:text-campus-800 flex items-center gap-1">
-                View All Polls <ArrowRight className="w-3.5 h-3.5" />
+                View All Elections <ArrowRight className="w-3.5 h-3.5" />
               </Link>
             </div>
             <div className="p-6">
               {activePolls.length === 0 ? (
                 <div className="text-center py-8 text-slate-500 text-sm">
                   <Vote className="w-8 h-8 text-slate-400 mx-auto mb-2" />
-                  <p className="font-medium text-slate-700">No campus polls created yet</p>
+                  <p className="font-medium text-slate-700">No campus elections created yet</p>
                   <p className="text-xs text-slate-400 mt-1">
-                    Click "Manage Polls" above or in the navigation to create your first election ballot.
+                    Click "Manage Elections" to publish your first election ballot.
                   </p>
                 </div>
               ) : (
@@ -252,6 +374,7 @@ const Dashboard = () => {
                         setSelectedPoll(p);
                         setSelectedOptionId('');
                       }}
+                      onActivateClick={(p) => setPollToActivate(p)}
                       onCloseClick={(p) => setPollToClose(p)}
                       onDeleteClick={(p) => setPollToDelete(p)}
                     />
@@ -264,58 +387,121 @@ const Dashboard = () => {
       )}
 
       {/* ============================================================ */}
-      {/* 2. STUDENT / CANDIDATE DASHBOARD VIEW */}
+      {/* 2. STUDENT DASHBOARD VIEW */}
       {/* ============================================================ */}
       {!isAdmin && (
-        <div className="card">
-          <div className="p-5 border-b border-slate-200 flex items-center justify-between">
-            <div>
-              <h2 className="text-base font-bold text-slate-900">Active Campus Elections & Polls</h2>
-              <p className="text-xs text-slate-500 mt-0.5">Cast your confidential ballot (One student = one vote)</p>
+        <div className="space-y-6">
+          {/* Candidate Status Banner */}
+          <div className="card p-5 bg-gradient-to-r from-campus-50/90 via-emerald-50/50 to-white border-campus-200">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="flex items-start sm:items-center gap-3.5">
+                <div className="w-12 h-12 rounded-xl bg-campus-600 text-white flex items-center justify-center shrink-0 shadow-sm">
+                  <Award className="w-6 h-6" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-base font-bold text-slate-900">Student Candidacy Status</h3>
+                    {user?.candidateStatus === 'approved' ? (
+                      <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-800 bg-emerald-100 border border-emerald-300 px-2 py-0.5 rounded-full">
+                        <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                        Approved Candidate
+                      </span>
+                    ) : user?.candidateStatus === 'pending' ? (
+                      <span className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-800 bg-amber-100 border border-amber-300 px-2 py-0.5 rounded-full">
+                        <Clock className="w-3 h-3 text-amber-600" />
+                        Pending Admin Review
+                      </span>
+                    ) : (
+                      <span className="text-[11px] font-medium text-slate-500 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-full">
+                        Not Applied
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-slate-600 mt-1 leading-relaxed">
+                    {user?.candidateStatus === 'approved'
+                      ? 'You are an eligible election candidate. University administrators can include you on official election ballots.'
+                      : user?.candidateStatus === 'pending'
+                      ? 'Your candidate request has been submitted. The university administration will review your statement.'
+                      : 'Students can request candidate status to run in upcoming student council and departmental elections.'}
+                  </p>
+                </div>
+              </div>
+
+              {user?.candidateStatus === 'approved' ? (
+                <span className="text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-lg shrink-0">
+                  Ready for Ballots
+                </span>
+              ) : user?.candidateStatus === 'pending' ? (
+                <span className="text-xs font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-lg shrink-0">
+                  Awaiting Approval
+                </span>
+              ) : (
+                <button
+                  onClick={() => setIsCandidateModalOpen(true)}
+                  className="btn-primary text-xs py-2 px-3.5 flex items-center gap-1.5 shrink-0 shadow-xs"
+                >
+                  <Award className="w-4 h-4" />
+                  Request Candidate Status
+                </button>
+              )}
             </div>
-            <Link to="/polls" className="text-xs font-semibold text-campus-700 hover:text-campus-800 flex items-center gap-1">
-              All Polls <ArrowRight className="w-3.5 h-3.5" />
-            </Link>
           </div>
 
-          <div className="p-5">
-            {activePolls.length === 0 ? (
-              <div className="text-center py-8 text-slate-500 text-sm">
-                <Vote className="w-8 h-8 text-slate-400 mx-auto mb-2" />
-                <p className="font-medium text-slate-700">No active polls at this time</p>
-                <p className="text-xs text-slate-400 mt-1">Check back later or explore closed election results.</p>
+          {/* Active Elections */}
+          <div className="card">
+            <div className="p-5 border-b border-slate-200 flex items-center justify-between">
+              <div>
+                <h2 className="text-base font-bold text-slate-900">Active Campus Elections</h2>
+                <p className="text-xs text-slate-500 mt-0.5">Cast your confidential ballot (One student = one vote per election)</p>
               </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {activePolls.map((poll) => (
-                  <PollCard
-                    key={poll._id}
-                    poll={poll}
-                    onVoteClick={(p) => {
-                      setSelectedPoll(p);
-                      setSelectedOptionId('');
-                    }}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
+              <Link to="/polls" className="text-xs font-semibold text-campus-700 hover:text-campus-800 flex items-center gap-1">
+                All Elections <ArrowRight className="w-3.5 h-3.5" />
+              </Link>
+            </div>
 
-          <div className="p-5 pt-0">
-            <div className="card p-4 bg-campus-50/50 border-campus-200">
-              <h4 className="text-xs font-bold text-campus-900 flex items-center gap-1.5 mb-1.5">
-                <Shield className="w-4 h-4 text-campus-700" />
-                Voting Integrity Guarantee
-              </h4>
-              <p className="text-[11px] text-campus-800 leading-relaxed">
-                Votes are authenticated via your student token. Each student is limited to one vote per election. Live tallies remain hidden until the poll is concluded.
-              </p>
+            <div className="p-5">
+              {activePolls.length === 0 ? (
+                <div className="text-center py-8 text-slate-500 text-sm">
+                  <Vote className="w-8 h-8 text-slate-400 mx-auto mb-2" />
+                  <p className="font-medium text-slate-700">No active elections at this time</p>
+                  <p className="text-xs text-slate-400 mt-1">Check back later or explore closed election results.</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {activePolls.map((poll) => (
+                    <PollCard
+                      key={poll._id}
+                      poll={poll}
+                      onVoteClick={(p) => {
+                        setSelectedPoll(p);
+                        setSelectedOptionId('');
+                      }}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="p-5 pt-0">
+              <div className="card p-4 bg-campus-50/50 border-campus-200">
+                <h4 className="text-xs font-bold text-campus-900 flex items-center gap-1.5 mb-1.5">
+                  <Shield className="w-4 h-4 text-campus-700" />
+                  Voting Integrity Guarantee
+                </h4>
+                <p className="text-[11px] text-campus-800 leading-relaxed">
+                  Votes are authenticated via your university student token. Each student is limited to exactly one vote per election. Live tallies remain confidential until polls close.
+                </p>
+              </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Vote Modal */}
+      {/* ============================================================ */}
+      {/* Modals */}
+      {/* ============================================================ */}
+
+      {/* 1. Vote Modal */}
       <Modal
         isOpen={!!selectedPoll}
         onClose={() => {
@@ -330,13 +516,13 @@ const Dashboard = () => {
             <div className="text-xs text-slate-600 bg-slate-50 p-3 rounded border border-slate-200 leading-relaxed">
               <p className="font-medium text-slate-800 mb-1">{selectedPoll.description}</p>
               <p className="text-slate-500 italic mt-2">
-                ⚠️ Notice: Once submitted, your vote cannot be altered or retracted. One student = one vote.
+                🔒 Security notice: One verified student = exactly one vote. Votes are confidential.
               </p>
             </div>
 
             <div>
               <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-2">
-                Select One Candidate / Choice:
+                Select One Approved Candidate / Choice:
               </label>
               <div className="space-y-2">
                 {selectedPoll.options?.map((opt) => (
@@ -392,19 +578,94 @@ const Dashboard = () => {
         )}
       </Modal>
 
-      {/* Close Poll Confirmation Modal */}
+      {/* 2. Student Candidate Request Modal */}
+      <Modal
+        isOpen={isCandidateModalOpen}
+        onClose={() => setIsCandidateModalOpen(false)}
+        title="Apply to Become an Election Candidate"
+        maxWidth="max-w-md"
+      >
+        <form onSubmit={handleCandidateRequest} className="space-y-4">
+          <div className="p-3 bg-campus-50 rounded-lg border border-campus-200 text-xs text-campus-900 space-y-1">
+            <p className="font-semibold">Candidate Application</p>
+            <p className="text-campus-800 leading-relaxed">
+              Submit your platform statement. Once approved by the administration, you will become an eligible candidate for upcoming campus elections.
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+              Your Platform / Manifesto *
+            </label>
+            <textarea
+              rows={4}
+              required
+              value={candidateManifesto}
+              onChange={(e) => setCandidateManifesto(e.target.value)}
+              placeholder="Outline your vision and reasons for running for student leadership..."
+              className="input-field text-xs"
+            />
+          </div>
+
+          <div className="pt-3 border-t border-slate-200 flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setIsCandidateModalOpen(false)}
+              className="btn-secondary text-xs"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={submittingCandidate || !candidateManifesto.trim()}
+              className="btn-primary text-xs py-2 px-4 flex items-center gap-1.5"
+            >
+              <Award className="w-3.5 h-3.5" />
+              {submittingCandidate ? 'Submitting...' : 'Submit Candidate Application'}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* 3. Activate Poll Confirmation Modal */}
+      <Modal
+        isOpen={!!pollToActivate}
+        onClose={() => setPollToActivate(null)}
+        title="Activate Campus Election"
+        maxWidth="max-w-md"
+      >
+        <div className="space-y-4">
+          <div className="flex items-start gap-3 p-3 bg-emerald-50 rounded border border-emerald-200 text-xs text-emerald-900">
+            <Play className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5 fill-current" />
+            <div>
+              <p className="font-semibold mb-0.5">Activate Election for Voting</p>
+              <p>Activating "{pollToActivate?.title}" will immediately open the election to all verified students for voting.</p>
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <button onClick={() => setPollToActivate(null)} className="btn-secondary text-xs">
+              Cancel
+            </button>
+            <button onClick={handleConfirmActivate} className="btn-primary bg-emerald-600 hover:bg-emerald-700 text-xs py-1.5 px-3">
+              Activate Election Now
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* 4. Close Poll Confirmation Modal */}
       <Modal
         isOpen={!!pollToClose}
         onClose={() => setPollToClose(null)}
-        title="Confirm Poll Closure"
+        title="Confirm Election Closure"
         maxWidth="max-w-md"
       >
         <div className="space-y-4">
           <div className="flex items-start gap-3 p-3 bg-amber-50 rounded border border-amber-200 text-xs text-amber-900">
-            <Shield className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+            <Lock className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
             <div>
-              <p className="font-semibold mb-0.5">Are you sure you want to close this poll?</p>
-              <p>Closing "{pollToClose?.title}" will immediately disable new votes and publish final aggregated results.</p>
+              <p className="font-semibold mb-0.5">Are you sure you want to close this election?</p>
+              <p>Closing "{pollToClose?.title}" will immediately disable new votes and publish final certified results.</p>
             </div>
           </div>
           <div className="flex justify-end gap-2 pt-2">
@@ -412,25 +673,25 @@ const Dashboard = () => {
               Keep Active
             </button>
             <button onClick={handleConfirmClose} className="btn-primary bg-amber-600 hover:bg-amber-700 text-xs py-1.5 px-3">
-              Yes, Close Poll & Reveal Results
+              Yes, Close Election & Reveal Results
             </button>
           </div>
         </div>
       </Modal>
 
-      {/* Delete Poll Confirmation Modal */}
+      {/* 5. Delete Poll Confirmation Modal */}
       <Modal
         isOpen={!!pollToDelete}
         onClose={() => setPollToDelete(null)}
-        title="Confirm Poll Deletion"
+        title="Confirm Election Deletion"
         maxWidth="max-w-md"
       >
         <div className="space-y-4">
           <div className="flex items-start gap-3 p-3 bg-rose-50 rounded border border-rose-200 text-xs text-rose-900">
-            <Shield className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+            <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
             <div>
               <p className="font-semibold mb-0.5">Permanent Deletion Warning</p>
-              <p>Deleting "{pollToDelete?.title}" will permanently erase this poll and all associated voter records from the database.</p>
+              <p>Deleting "{pollToDelete?.title}" will permanently erase this election and all voter records from the database.</p>
             </div>
           </div>
           <div className="flex justify-end gap-2 pt-2">

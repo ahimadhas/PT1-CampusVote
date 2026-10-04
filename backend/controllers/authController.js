@@ -21,7 +21,17 @@ const generateToken = (user) => {
 // @access  Public
 const register = async (req, res, next) => {
   try {
-    const { name, email, password, role, department, studentId, bio } = req.body;
+    const {
+      name,
+      email,
+      password,
+      role,
+      department,
+      studentId,
+      bio,
+      requestCandidate,
+      candidateManifesto,
+    } = req.body;
 
     if (!name || !email || !password) {
       return res.status(400).json({
@@ -46,8 +56,14 @@ const register = async (req, res, next) => {
       });
     }
 
-    const validRoles = ['admin', 'student', 'candidate'];
-    const userRole = role && validRoles.includes(role) ? role : 'student';
+    // Exactly 2 roles: 'admin' and 'student'
+    const validRoles = ['admin', 'student'];
+    const userRole = role && validRoles.includes(role.toLowerCase()) ? role.toLowerCase() : 'student';
+
+    // If student requested to become candidate upon registration
+    const isCandidateRequested =
+      userRole === 'student' &&
+      (requestCandidate === true || requestCandidate === 'true' || !!candidateManifesto);
 
     const user = await User.create({
       name: name.trim(),
@@ -57,13 +73,18 @@ const register = async (req, res, next) => {
       department: department || '',
       studentId: studentId || '',
       bio: bio || '',
+      candidateStatus: isCandidateRequested ? 'pending' : 'none',
+      candidateManifesto: isCandidateRequested ? (candidateManifesto || bio || '').trim() : '',
+      candidateRequestedAt: isCandidateRequested ? new Date() : null,
     });
 
     const token = generateToken(user);
 
     res.status(201).json({
       success: true,
-      message: 'Account created successfully',
+      message: isCandidateRequested
+        ? 'Account created and candidate application submitted for administrator review.'
+        : 'Account created successfully',
       token,
       user,
     });
@@ -138,8 +159,61 @@ const getMe = async (req, res, next) => {
   }
 };
 
+// @desc    Student request to become a candidate
+// @route   POST /api/auth/request-candidate
+// @access  Private (Student)
+const requestCandidate = async (req, res, next) => {
+  try {
+    const { manifesto } = req.body;
+    const user = await User.findById(req.user._id);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
+
+    if (user.role !== 'student') {
+      return res.status(400).json({
+        success: false,
+        message: 'Only registered students can submit candidate requests',
+      });
+    }
+
+    if (user.candidateStatus === 'approved') {
+      return res.status(400).json({
+        success: false,
+        message: 'You are already an approved election candidate.',
+      });
+    }
+
+    if (user.candidateStatus === 'pending') {
+      return res.status(400).json({
+        success: false,
+        message: 'Your candidate request is already pending review by the administrator.',
+      });
+    }
+
+    user.candidateStatus = 'pending';
+    user.candidateManifesto = (manifesto || user.bio || '').trim();
+    user.candidateRequestedAt = new Date();
+    await user.save();
+
+    res.status(200).json({
+      success: true,
+      message: 'Candidate request submitted successfully. Awaiting administrator approval.',
+      user,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   register,
   login,
   getMe,
+  requestCandidate,
 };
+

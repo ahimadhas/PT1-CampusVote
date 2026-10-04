@@ -2,7 +2,18 @@ import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
-import { GraduationCap, Lock, Mail, User, AlertCircle, BookOpen, Award, Shield } from 'lucide-react';
+import {
+  GraduationCap,
+  Lock,
+  Mail,
+  User,
+  AlertCircle,
+  BookOpen,
+  Award,
+  Shield,
+  CheckSquare,
+  Square,
+} from 'lucide-react';
 
 const Register = () => {
   const [role, setRole] = useState('student');
@@ -12,6 +23,10 @@ const Register = () => {
   const [department, setDepartment] = useState('');
   const [studentId, setStudentId] = useState('');
   const [bio, setBio] = useState('');
+
+  // Candidate Request State (for Students)
+  const [requestCandidate, setRequestCandidate] = useState(false);
+  const [candidateManifesto, setCandidateManifesto] = useState('');
 
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
@@ -44,11 +59,17 @@ const Register = () => {
         department: department.trim(),
         studentId: studentId.trim(),
         bio: bio.trim(),
+        requestCandidate: role === 'student' && requestCandidate,
+        candidateManifesto: role === 'student' && requestCandidate ? candidateManifesto.trim() : '',
       };
 
       const res = await register(payload);
       if (res.success) {
-        success(`Account created successfully! Welcome to CampusPortal, ${name}.`);
+        if (role === 'student' && requestCandidate) {
+          success(`Account created! Your candidate request was submitted to the administration for review.`);
+        } else {
+          success(`Account created successfully! Welcome to CampusPortal, ${name}.`);
+        }
         navigate('/dashboard', { replace: true });
       }
     } catch (err) {
@@ -84,12 +105,12 @@ const Register = () => {
           )}
 
           <form onSubmit={handleSubmit} className="space-y-5">
-            {/* Role Selection */}
+            {/* Exactly 2 Roles: Student and Admin */}
             <div>
               <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-2">
-                Select Your Account Type *
+                Select Your Role *
               </label>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 gap-3">
                 <button
                   type="button"
                   onClick={() => setRole('student')}
@@ -100,25 +121,16 @@ const Register = () => {
                   }`}
                 >
                   <BookOpen className="w-5 h-5 text-campus-600" />
-                  <span className="text-xs">Student</span>
+                  <span className="text-sm">Student</span>
+                  <span className="text-[10px] text-slate-500 font-normal">Vote & apply as candidate</span>
                 </button>
 
                 <button
                   type="button"
-                  onClick={() => setRole('candidate')}
-                  className={`p-3 rounded-lg border text-center transition-all flex flex-col items-center gap-1.5 ${
-                    role === 'candidate'
-                      ? 'border-emerald-600 bg-emerald-50/80 text-emerald-900 font-semibold ring-1 ring-emerald-600'
-                      : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                  }`}
-                >
-                  <Award className="w-5 h-5 text-emerald-600" />
-                  <span className="text-xs">Candidate</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setRole('admin')}
+                  onClick={() => {
+                    setRole('admin');
+                    setRequestCandidate(false);
+                  }}
                   className={`p-3 rounded-lg border text-center transition-all flex flex-col items-center gap-1.5 ${
                     role === 'admin'
                       ? 'border-amber-600 bg-amber-50/80 text-amber-900 font-semibold ring-1 ring-amber-600'
@@ -126,15 +138,51 @@ const Register = () => {
                   }`}
                 >
                   <Shield className="w-5 h-5 text-amber-600" />
-                  <span className="text-xs">Administrator</span>
+                  <span className="text-sm">Administrator</span>
+                  <span className="text-[10px] text-slate-500 font-normal">Manage elections & approvals</span>
                 </button>
               </div>
-              {role === 'candidate' && (
-                <p className="text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded p-2 mt-2">
-                  Candidate accounts can be added to elections by an administrator once registered.
-                </p>
-              )}
             </div>
+
+            {/* Candidate Request Toggle (Available for Students) */}
+            {role === 'student' && (
+              <div className="p-3.5 rounded-lg border border-campus-200 bg-campus-50/50 space-y-2.5">
+                <div
+                  onClick={() => setRequestCandidate(!requestCandidate)}
+                  className="flex items-start gap-2.5 cursor-pointer select-none"
+                >
+                  {requestCandidate ? (
+                    <CheckSquare className="w-4 h-4 text-campus-700 shrink-0 mt-0.5" />
+                  ) : (
+                    <Square className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
+                  )}
+                  <div>
+                    <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                      <Award className="w-3.5 h-3.5 text-emerald-600" />
+                      Request to become an Election Candidate
+                    </span>
+                    <p className="text-[11px] text-slate-600 mt-0.5 leading-relaxed">
+                      Check this box if you plan to run for student office. Only administrator-approved candidates can be added to election ballots.
+                    </p>
+                  </div>
+                </div>
+
+                {requestCandidate && (
+                  <div className="pt-2 border-t border-campus-200/60">
+                    <label className="block text-[11px] font-semibold text-campus-900 mb-1">
+                      Candidate Statement / Manifesto (Optional)
+                    </label>
+                    <textarea
+                      rows={2}
+                      value={candidateManifesto}
+                      onChange={(e) => setCandidateManifesto(e.target.value)}
+                      placeholder="Share your goals or reasons for running for student leadership..."
+                      className="input-field text-xs"
+                    />
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Basic Info */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -229,10 +277,10 @@ const Register = () => {
                 Bio (Optional)
               </label>
               <textarea
-                rows={3}
+                rows={2}
                 value={bio}
                 onChange={(e) => setBio(e.target.value)}
-                placeholder="Brief introduction about yourself, your academic interests, and career goals..."
+                placeholder="Brief introduction about yourself..."
                 className="input-field"
               />
             </div>

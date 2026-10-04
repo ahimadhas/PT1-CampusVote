@@ -11,19 +11,23 @@ const getDashboardStats = async (req, res, next) => {
       totalUsers,
       totalAdmins,
       totalStudents,
-      totalCandidates,
+      totalApprovedCandidates,
+      pendingCandidateRequests,
       totalPolls,
       activePolls,
       closedPolls,
+      draftPolls,
       totalVotes,
     ] = await Promise.all([
       User.countDocuments(),
       User.countDocuments({ role: 'admin' }),
       User.countDocuments({ role: 'student' }),
-      User.countDocuments({ role: 'candidate' }),
+      User.countDocuments({ candidateStatus: 'approved' }),
+      User.countDocuments({ candidateStatus: 'pending' }),
       Poll.countDocuments(),
       Poll.countDocuments({ status: 'active' }),
       Poll.countDocuments({ status: 'closed' }),
+      Poll.countDocuments({ status: 'draft' }),
       Vote.countDocuments(),
     ]);
 
@@ -33,8 +37,13 @@ const getDashboardStats = async (req, res, next) => {
       .limit(5);
 
     const recentUsers = await User.find()
-      .select('name email role department createdAt')
+      .select('name email role department candidateStatus createdAt')
       .sort({ createdAt: -1 })
+      .limit(5);
+
+    const pendingRequests = await User.find({ candidateStatus: 'pending' })
+      .select('name email department studentId candidateManifesto candidateRequestedAt')
+      .sort({ candidateRequestedAt: -1 })
       .limit(5);
 
     res.status(200).json({
@@ -44,33 +53,44 @@ const getDashboardStats = async (req, res, next) => {
           total: totalUsers,
           admins: totalAdmins,
           students: totalStudents,
-          candidates: totalCandidates,
+          candidates: totalApprovedCandidates,
+          pendingCandidates: pendingCandidateRequests,
         },
         polls: {
           total: totalPolls,
           active: activePolls,
           closed: closedPolls,
+          draft: draftPolls,
           totalVotes,
         },
       },
       recentPolls,
       recentUsers,
+      pendingRequests,
     });
   } catch (error) {
     next(error);
   }
 };
 
-// @desc    Get all users list (with optional role / search filter)
+// @desc    Get all users list (with optional role / candidateStatus / search filter)
 // @route   GET /api/admin/users
 // @access  Private (Admin only)
 const getAllUsers = async (req, res, next) => {
   try {
-    const { role, search } = req.query;
+    const { role, candidateStatus, search } = req.query;
     const query = {};
 
     if (role && role !== 'all') {
-      query.role = role;
+      if (role === 'candidate') {
+        query.candidateStatus = 'approved';
+      } else {
+        query.role = role;
+      }
+    }
+
+    if (candidateStatus && candidateStatus !== 'all') {
+      query.candidateStatus = candidateStatus;
     }
 
     if (search) {
@@ -80,17 +100,82 @@ const getAllUsers = async (req, res, next) => {
         { name: searchRegex },
         { email: searchRegex },
         { department: searchRegex },
+        { studentId: searchRegex },
       ];
     }
 
     const users = await User.find(query)
-      .select('name email role department studentId createdAt')
+      .select('name email role department studentId bio candidateStatus candidateManifesto candidateRequestedAt candidateReviewedAt createdAt')
       .sort({ createdAt: -1 });
 
     res.status(200).json({
       success: true,
       count: users.length,
       users,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get candidate requests
+// @route   GET /api/admin/candidate-requests
+// @access  Private (Admin only)
+const getCandidateRequests = async (req, res, next) => {
+  try {
+    const { status } = req.query;
+    const query = { role: 'student' };
+
+    if (status && status !== 'all') {
+      query.candidateStatus = status;
+    } else {
+      // By default return users with non-none status or pending
+      query.candidateStatus = { $in: ['pending', 'approved', 'rejected'] };
+    }
+
+    const requests = await User.find(query)
+      .select('name email department studentId bio candidateStatus candidateManifesto candidateRequestedAt candidateReviewedAt createdAt')
+      .sort({ candidateRequestedAt: -1, createdAt: -1 });
+
+    res.status(200).json({
+      success: true,
+      count: requests.length,
+      requests,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Approve or reject candidate request
+// @route   PATCH /api/admin/candidate-requests/:id
+// @access  Private (Admin only)
+const reviewCandidateRequest = async (req, res, next) => {
+  try {
+    const { status } = req.body;
+    if (!status || !['approved', 'rejected', 'pending'].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid status. Status must be "approved" or "rejected".',
+      });
+    }
+
+    const user = await User.findById(req.params.id);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
+
+    user.candidateStatus = status;
+    user.candidateReviewedAt = new Date();
+    await user.save();
+
+    res.status(200).json({
+      success: true,
+      message: `Candidate request ${status} successfully for ${user.name}`,
+      user,
     });
   } catch (error) {
     next(error);
@@ -108,7 +193,7 @@ const updateUserRole = async (req, res, next) => {
     if (!role || !validRoles.includes(role)) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid role provided. Valid roles are: admin, student, candidate',
+        message: 'Invalid role provided. Valid roles are: admin, student',
       });
     }
 
@@ -127,12 +212,18 @@ const updateUserRole = async (req, res, next) => {
       });
     }
 
-    user.role = role;
+    if (role === 'candidate') {
+      user.role = 'student';
+      user.candidateStatus = 'approved';
+    } else {
+      user.role = role;
+    }
+
     await user.save();
 
     res.status(200).json({
       success: true,
-      message: `User role updated to ${role} successfully`,
+      message: `User updated successfully`,
       user,
     });
   } catch (error) {
@@ -176,6 +267,8 @@ const deleteUser = async (req, res, next) => {
 module.exports = {
   getDashboardStats,
   getAllUsers,
+  getCandidateRequests,
+  reviewCandidateRequest,
   updateUserRole,
   deleteUser,
 };

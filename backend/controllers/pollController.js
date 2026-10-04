@@ -3,7 +3,10 @@ const Poll = require('../models/Poll');
 const Vote = require('../models/Vote');
 const User = require('../models/User');
 
-const CANDIDATE_POPULATE = { path: 'options.candidateId', select: 'name email department bio' };
+const CANDIDATE_POPULATE = {
+  path: 'options.candidateId',
+  select: 'name email department bio candidateManifesto candidateStatus',
+};
 
 // Injects a resolved `name` into each option from its populated candidate account,
 // so the frontend can keep reading `option.name` regardless of the underlying reference.
@@ -15,12 +18,33 @@ const shapePollOptions = (pollObj) => {
   return pollObj;
 };
 
-// @desc    Create a new poll
+// @desc    Get all approved candidates eligible for elections
+// @route   GET /api/polls/approved-candidates
+// @access  Authenticated (Student / Admin)
+const getApprovedCandidates = async (req, res, next) => {
+  try {
+    const candidates = await User.find({
+      candidateStatus: 'approved',
+    })
+      .select('name email department studentId bio candidateManifesto candidateStatus createdAt')
+      .sort({ name: 1 });
+
+    res.status(200).json({
+      success: true,
+      count: candidates.length,
+      candidates,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Create a new poll/election
 // @route   POST /api/polls
 // @access  Private (Admin only)
 const createPoll = async (req, res, next) => {
   try {
-    const { title, description, category, options } = req.body;
+    const { title, description, category, options, status } = req.body;
 
     if (!title || !description) {
       return res.status(400).json({
@@ -57,18 +81,20 @@ const createPoll = async (req, res, next) => {
       });
     }
 
-    // Verify every referenced candidate is a real, currently-registered candidate account
+    // Verify every referenced candidate is an APPROVED candidate account
     const candidateUsers = await User.find({
       _id: { $in: sanitizedOptions.map((o) => o.candidateId) },
-      role: 'candidate',
-    }).select('_id');
+      candidateStatus: 'approved',
+    }).select('_id name');
 
     if (candidateUsers.length !== sanitizedOptions.length) {
       return res.status(400).json({
         success: false,
-        message: 'One or more selected candidates could not be found. They must be registered accounts with the "candidate" role.',
+        message: 'One or more selected candidates are not approved. Only approved candidates can be added to an election.',
       });
     }
+
+    const pollStatus = status === 'draft' ? 'draft' : 'active';
 
     let poll = await Poll.create({
       title: title.trim(),
@@ -76,14 +102,15 @@ const createPoll = async (req, res, next) => {
       category: category || 'general_poll',
       options: sanitizedOptions,
       createdBy: req.user._id,
-      status: 'active',
+      status: pollStatus,
+      activatedAt: pollStatus === 'active' ? new Date() : null,
     });
 
     poll = await poll.populate(CANDIDATE_POPULATE);
 
     res.status(201).json({
       success: true,
-      message: 'Poll created successfully and is now active',
+      message: pollStatus === 'active' ? 'Poll created successfully and is now active' : 'Poll saved as draft',
       poll: shapePollOptions(poll.toObject()),
     });
   } catch (error) {
@@ -99,8 +126,18 @@ const getPolls = async (req, res, next) => {
     const { status, category, search, limit } = req.query;
     const query = {};
 
+    const isAdminUser = req.user && req.user.role === 'admin';
+
     if (status) {
-      query.status = status;
+      if (!isAdminUser && status === 'draft') {
+        // Students cannot view draft polls
+        query.status = { $in: ['active', 'closed'] };
+      } else {
+        query.status = status;
+      }
+    } else if (!isAdminUser) {
+      // Non-admins only see active and closed polls
+      query.status = { $in: ['active', 'closed'] };
     }
 
     if (category) {
@@ -171,6 +208,14 @@ const getPollById = async (req, res, next) => {
       });
     }
 
+    // Students cannot view draft polls
+    if (poll.status === 'draft' && (!req.user || req.user.role !== 'admin')) {
+      return res.status(403).json({
+        success: false,
+        message: 'This election is not currently active.',
+      });
+    }
+
     const pollObj = shapePollOptions(poll.toObject());
 
     // Check if current user has voted
@@ -192,12 +237,12 @@ const getPollById = async (req, res, next) => {
   }
 };
 
-// @desc    Update poll details (safe updates — title, description, category only)
+// @desc    Update poll details (safe updates — title, description, category, and options if no votes yet)
 // @route   PUT /api/polls/:id
 // @access  Private (Admin only)
 const updatePoll = async (req, res, next) => {
   try {
-    const { title, description, category } = req.body;
+    const { title, description, category, options } = req.body;
     let poll = await Poll.findById(req.params.id);
 
     if (!poll) {
@@ -211,12 +256,83 @@ const updatePoll = async (req, res, next) => {
     if (description) poll.description = description.trim();
     if (category) poll.category = category;
 
+    if (options && Array.isArray(options) && options.length >= 2) {
+      const votesCount = await Vote.countDocuments({ pollId: poll._id });
+      if (votesCount === 0) {
+        const seen = new Set();
+        const sanitizedOptions = [];
+        for (const opt of options) {
+          const candidateId = typeof opt === 'string' ? opt : opt.candidateId;
+          if (!candidateId || !mongoose.Types.ObjectId.isValid(candidateId)) continue;
+          if (seen.has(candidateId.toString())) continue;
+          seen.add(candidateId.toString());
+          sanitizedOptions.push({
+            candidateId,
+            description: opt.description ? opt.description.trim() : '',
+          });
+        }
+        if (sanitizedOptions.length >= 2) {
+          const candidateUsers = await User.find({
+            _id: { $in: sanitizedOptions.map((o) => o.candidateId) },
+            candidateStatus: 'approved',
+          }).select('_id');
+          if (candidateUsers.length === sanitizedOptions.length) {
+            poll.options = sanitizedOptions;
+          }
+        }
+      }
+    }
+
     await poll.save();
     poll = await poll.populate(CANDIDATE_POPULATE);
 
     res.status(200).json({
       success: true,
       message: 'Poll updated successfully',
+      poll: shapePollOptions(poll.toObject()),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Activate a draft/inactive poll (opens voting)
+// @route   PATCH /api/polls/:id/activate
+// @access  Private (Admin only)
+const activatePoll = async (req, res, next) => {
+  try {
+    const poll = await Poll.findById(req.params.id);
+
+    if (!poll) {
+      return res.status(404).json({
+        success: false,
+        message: 'Poll not found',
+      });
+    }
+
+    if (poll.status === 'active') {
+      return res.status(400).json({
+        success: false,
+        message: 'Poll is already active',
+      });
+    }
+
+    if (poll.status === 'closed') {
+      return res.status(400).json({
+        success: false,
+        message: 'Closed poll cannot be reactivated',
+      });
+    }
+
+    poll.status = 'active';
+    poll.activatedAt = new Date();
+    await poll.save();
+
+    await poll.populate(CANDIDATE_POPULATE);
+
+    res.status(200).json({
+      success: true,
+      message: 'Poll activated successfully. Students can now cast their votes.',
       poll: shapePollOptions(poll.toObject()),
     });
   } catch (error) {
@@ -302,12 +418,12 @@ const getPollResults = async (req, res, next) => {
     }
 
     // CRITICAL REQUIREMENT:
-    // Results MUST NOT be revealed while poll is active
-    if (poll.status === 'active') {
+    // Results MUST NOT be revealed while poll is active or draft
+    if (poll.status !== 'closed') {
       return res.status(403).json({
         success: false,
         message: 'Results are available after the poll closes.',
-        status: 'active',
+        status: poll.status,
       });
     }
 
@@ -388,10 +504,12 @@ const getPollResults = async (req, res, next) => {
 };
 
 module.exports = {
+  getApprovedCandidates,
   createPoll,
   getPolls,
   getPollById,
   updatePoll,
+  activatePoll,
   closePoll,
   deletePoll,
   getPollResults,

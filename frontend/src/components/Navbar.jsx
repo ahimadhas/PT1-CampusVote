@@ -89,6 +89,9 @@ const Navbar = () => {
                         isAdmin ? 'bg-amber-400' : 'bg-campus-400'
                       }`} />
                       {user?.role}
+                      {user?.role === 'student' && user?.candidateStatus === 'approved' && (
+                        <span className="text-[10px] text-emerald-400 font-medium">· Candidate</span>
+                      )}
                     </span>
                   </div>
                 </div>
@@ -140,7 +143,12 @@ const Navbar = () => {
             <>
               <div className="pb-3 mb-2 border-b border-slate-800">
                 <div className="text-sm font-semibold text-white">{user?.name}</div>
-                <div className="text-xs text-slate-400">{user?.email} • <span className="capitalize text-campus-400">{user?.role}</span></div>
+                <div className="text-xs text-slate-400">
+                  {user?.email} • <span className="capitalize text-campus-400">{user?.role}</span>
+                  {user?.role === 'student' && user?.candidateStatus === 'approved' && (
+                    <span className="text-emerald-400 text-xs ml-1 font-medium">· Candidate</span>
+                  )}
+                </div>
               </div>
 
               <NavLink to="/dashboard" onClick={() => setMobileOpen(false)} className={mobileNavLinkClass}>

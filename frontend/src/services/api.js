@@ -50,6 +50,7 @@ export const authService = {
   login: (credentials) => api.post('/auth/login', credentials),
   register: (userData) => api.post('/auth/register', userData),
   getMe: () => api.get('/auth/me'),
+  requestCandidate: (data) => api.post('/auth/request-candidate', data),
 };
 
 export const pollService = {
@@ -57,16 +58,20 @@ export const pollService = {
   getById: (id) => api.get(`/polls/${id}`),
   create: (data) => api.post('/polls', data),
   update: (id, data) => api.put(`/polls/${id}`, data),
+  activate: (id) => api.patch(`/polls/${id}/activate`),
   close: (id) => api.patch(`/polls/${id}/close`),
   delete: (id) => api.delete(`/polls/${id}`),
   castVote: (id, optionId) => api.post(`/polls/${id}/vote`, { optionId }),
   getMyVote: (id) => api.get(`/polls/${id}/my-vote`),
   getResults: (id) => api.get(`/polls/${id}/results`),
+  getApprovedCandidates: () => api.get('/polls/approved-candidates'),
 };
 
 export const adminService = {
   getStats: () => api.get('/admin/stats'),
   getUsers: (params) => api.get('/admin/users', { params }),
+  getCandidateRequests: (params) => api.get('/admin/candidate-requests', { params }),
+  reviewCandidateRequest: (id, status) => api.patch(`/admin/candidate-requests/${id}`, { status }),
   updateUserRole: (id, role) => api.patch(`/admin/users/${id}/role`, { role }),
   deleteUser: (id) => api.delete(`/admin/users/${id}`),
 };

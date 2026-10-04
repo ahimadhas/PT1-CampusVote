@@ -27,9 +27,31 @@ const UserSchema = new mongoose.Schema(
     },
     role: {
       type: String,
-      enum: ['admin', 'student', 'candidate'],
+      enum: ['admin', 'student'],
       default: 'student',
       required: true,
+      lowercase: true,
+      trim: true,
+    },
+    candidateStatus: {
+      type: String,
+      enum: ['none', 'pending', 'approved', 'rejected'],
+      default: 'none',
+      index: true,
+    },
+    candidateManifesto: {
+      type: String,
+      trim: true,
+      default: '',
+      maxlength: [2000, 'Manifesto cannot exceed 2000 characters'],
+    },
+    candidateRequestedAt: {
+      type: Date,
+      default: null,
+    },
+    candidateReviewedAt: {
+      type: Date,
+      default: null,
     },
     department: {
       type: String,
